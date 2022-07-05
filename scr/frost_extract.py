@@ -603,8 +603,14 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True, est='fixed'):
                 os.mkdir(out_folder)
             #all_ds_station = xr.decode_cf(all_ds_station)
             # The above line release an error: TypeError: The DTypes <class 'numpy.dtype[int64]'> and <class 'numpy.dtype[datetime64]'> do not have a common DType. For example they cannot be stored in a single array unless the dtype is `object`.
-            all_ds_station.to_netcdf(outputfile,
+            try:
+                if all_ds_station.data_vars:    
+                    all_ds_station.to_netcdf(outputfile,
                                      encoding=set_encoding(all_ds_station, fill=myfillvalue))
+                else:
+                    continue
+            except TypeError:
+                continue
 
 
 
