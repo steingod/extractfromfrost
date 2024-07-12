@@ -412,6 +412,23 @@ def add_global_attrs(sttype, ds, dsmd, stmd, stmdd, dyninfo, kw, bbox=None):
         ds.attrs['keywords'] = ', '.join(kw)
         ds.attrs['keywords_vocabulary'] = 'GCMDSK:GCMD Science Keywords:https://gcmd.earthdata.nasa.gov/kms/concepts/concept_scheme/sciencekeywords'
 
+    # Add GEMET and NORTHEMES keywords to fixed station type data.
+    if sttype == 'fixed':
+        keywords = ('GEMET:Meteorological geographical features, GEMET:Atmospheric conditions,'
+                    ' NORTHEMES:Weather and climate')
+        vocab = ('GEMET:INSPIRE Themes:https://inspire.ec.europa.eu/theme,'
+                 ' NORTHEMES:GeoNorge Themes:https://register.geonorge.no/metadata-kodelister/nasjonal-temainndeling')
+
+        try:
+            ds.attrs['keywords'] = ds.attrs['keywords'] + ', ' + keywords
+        except KeyError:
+            ds.attrs['keywords'] = keywords
+
+        try:
+            ds.attrs['keywords_vocabulary'] = ds.attrs['keywords_vocabulary'] + ', ' + vocab
+        except KeyError:
+            ds.attrs['keywords_vocabulary'] = vocab
+
     # License (TODO, not complete)
     if stmdd:
         stmddkeys = stmdd.keys()
