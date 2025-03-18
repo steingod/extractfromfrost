@@ -20,9 +20,9 @@ import yaml
 import logging
 import logging.handlers
 import re
-import uuid
 from datetime import datetime, timedelta, date, timezone
 from calendar import monthrange, month_name
+from requests.auth import HTTPBasicAuth
 
 
 def get_performance_category(chosen_category):
@@ -189,6 +189,7 @@ def initialise_logger(outputfile = './log'):
 
     return(mylog)
 
+
 def pull_request(site, request, frostcfg, mylog, s = None, data = False):
     
     msger = False
@@ -211,13 +212,37 @@ def pull_request(site, request, frostcfg, mylog, s = None, data = False):
     if not r.status_code == 200:
         mylog.error('Returned status code was %s saying:\n%s', r.status_code, r.text)
         msger = True
-    
+        
     if data:
         metadata = r
     else:
         metadata = json.loads(r.text)
     
     return (metadata, msger)
+
+
+def print_and_return_station_ids(frostcfg):
+    url = "https://frost.met.no/sources/v0.jsonld?municipality=skip&validtime=1000-01-01/9999-01-01"
+
+    response = requests.get(url, auth=HTTPBasicAuth(frostcfg['client_id'], ''))
+    data = response.json()
+
+    # Check if 'data' key exists in the response
+    if 'data' in data:
+        stations = data['data']
+        print('Available moving stations:')
+        for station in stations:
+            print('Station:', station['id'])
+        return stations
+            
+    else:
+        print("Error: 'data' key not found in the API response.")
+        print("Full response:", data)  # print the full response for debugging
+        return None
+
+
+
+valid_moving_stations = ['SN77049','SN77037','SN77046','SN77001','SN20957','SN20930','SN20956','SN77048','SN77006','SN77042','SN77000','SN77035','SN20955','SN77005']
 
 
 def get_stations(frostcfg, pars, mylog):
@@ -234,16 +259,30 @@ def get_stations(frostcfg, pars, mylog):
         myrequest = 'ids='+','.join(stations.keys())+'&validtime=1000-01-01/9999-01-01'
         metadata, msger = pull_request(frostcfg['endpointmeta'], myrequest, frostcfg, mylog)
     else:
+        # Ensure the station type is accessed
+        st_type = frostcfg['st_type']
         # Retrieve all stations found
-        mylog.info('Retrieving all '+frostcfg['st_type']+' stations in FROST. %s')
+        mylog.info('Retrieving all '+frostcfg['st_type']+' stations in FROST.')
+
         if st_type == 'permafrost':
             myrequest = 'types=SensorSystem&elements=soil_temperature'+'&validtime=1000-01-01/9999-01-01'
         elif st_type == 'moving':
-            myrequest = 'types=SensorSystem&municipality=skip'+'&validtime=1000-01-01/9999-01-01'
+            #myrequest = 'types=SensorSystem&municipality=skip'+'&validtime=1000-01-01/9999-01-01'
+            myrequest = 'municipality=skip'+'&validtime=1000-01-01/9999-01-01' 
         elif st_type == 'fixed':
             myrequest = 'types=SensorSystem&elements!=soil_temperature&municipality!=skip'+'&validtime=1000-01-01/9999-01-01'
         metadata, msger = pull_request(frostcfg['endpointmeta'], myrequest, frostcfg, mylog)
-        stations = list(set([x['id'] for x  in metadata['data']]))       
+        stations = list(set([x['id'] for x  in metadata['data']]))     
+
+        if st_type == 'moving':
+            valid_stations = []
+            for station in stations:
+                if station in valid_moving_stations:
+                    valid_stations.append(station)
+                else:
+                    mylog.info(f"Skipping invalid moving station: {station}")
+            stations = valid_stations
+         
     
     if stations:
         stations_dicts =  metadata['data']
@@ -262,7 +301,7 @@ def get_vars(request, frostcfg, mylog, msg):
 
 """
 Not sure on this but believe it is listing periods with actual data.
-Meaqning, dividing the request into segmented requests.
+Meaning, dividing the request into segmented requests.
 """
 def get_periods(pars, metadata, direc, backwards=None):
     
@@ -412,38 +451,13 @@ def add_global_attrs(sttype, ds, dsmd, stmd, stmdd, dyninfo, kw, bbox=None):
         ds.attrs['keywords'] = ', '.join(kw)
         ds.attrs['keywords_vocabulary'] = 'GCMDSK:GCMD Science Keywords:https://gcmd.earthdata.nasa.gov/kms/concepts/concept_scheme/sciencekeywords'
 
-    # Add GEMET and NORTHEMES keywords to fixed station type data.
-    if sttype == 'fixed':
-        keywords = ('GEMET:Meteorological geographical features, GEMET:Atmospheric conditions,'
-                    ' NORTHEMES:Weather and climate')
-        vocab = ('GEMET:INSPIRE Themes:https://inspire.ec.europa.eu/theme,'
-                 ' NORTHEMES:GeoNorge Themes:https://register.geonorge.no/metadata-kodelister/nasjonal-temainndeling')
-
-        try:
-            ds.attrs['keywords'] = ds.attrs['keywords'] + ', ' + keywords
-        except KeyError:
-            ds.attrs['keywords'] = keywords
-
-        try:
-            ds.attrs['keywords_vocabulary'] = ds.attrs['keywords_vocabulary'] + ', ' + vocab
-        except KeyError:
-            ds.attrs['keywords_vocabulary'] = vocab
-
-    # Extract some useful key lists
+    # License (TODO, not complete)
     if stmdd:
         stmddkeys = stmdd.keys()
-    if dsmd:
-        dsmdkeys = dsmd.keys()
-
-    # License 
-    if stmdd:
         if 'license' in stmddkeys:
             ds.attrs['license'] = stmdd['license']
-    else:
-        if 'license' in dsmdkeys:
-            ds.attrs['license'] = dsmd['license']
         else:
-            ds.attrs['license'] = 'Not provided'
+            ds.attrs['license'] = dsmd['license']
 
     # Spatiotemporal information
     ds.attrs['time_coverage_start'] = dyninfo['datasetstart']
@@ -514,7 +528,7 @@ def add_global_attrs(sttype, ds, dsmd, stmd, stmdd, dyninfo, kw, bbox=None):
     ds.attrs['publisher_institution'] = 'Norwegian Meteorological Institute'
 
     # Conventions specification
-    ds.attrs['Conventions'] = 'ACDD, CF-1.11'
+    ds.attrs['Conventions'] = 'ACDD, CF-1.8'
 
     # Provenance information
     ds.attrs['date_created'] = stmd['createdAt']
@@ -522,70 +536,21 @@ def add_global_attrs(sttype, ds, dsmd, stmd, stmdd, dyninfo, kw, bbox=None):
     ds.attrs['source'] = 'Norwegian Meteorological Institute archive of historical weather and climate data' 
 
     # Identifiers
-    if 'wigosId' in stmd['data'][0].keys():
-        ds.attrs['wigosId'] = stmd['data'][0]['wigosId']
+    ds.attrs['wigosId'] = stmd['data'][0]['wigosId']
     ds.attrs['MET_Identifier'] =  stmd['data'][0]['id']
 
     # Project linkages
     if stmdd:
         if 'Project' in stmddkeys:
             ds.attrs['project'] = stmdd['Project']
-    else:
-        if 'Project' in dsmdkeys:
+        else:
             ds.attrs['project'] = dsmd['Project']
-        else:
-            ds.attrs['project'] = 'Not provided'
-
-    # Collection linkages
-    if stmdd:
-        if 'Collection' in stmddkeys:
-            ds.attrs['collection'] = stmdd['Collection']
-    else:
-        if 'Collection' in dsmdkeys:
-            ds.attrs['collection'] = dsmd['Collection']
-        else:
-            ds.attrs['collection'] = 'Not provided'
-
-    # activity type
-    if stmdd:
-        if 'activity_type' in stmddkeys:
-            ds.attrs['activity_type'] = stmdd['activity_type']
-    else:
-        if 'activity_type' in dsmdkeys:
-            ds.attrs['activity_type'] = dsmd['activity_type']
-        else:
-            ds.attrs['activity_type'] = 'Not provided'
-
-    # iso topic category
-    if stmdd:
-        if 'iso_topic_category' in stmddkeys:
-            ds.attrs['iso_topic_category'] = stmdd['iso_topic_category']
-    else:
-        if 'iso_topic_category' in dsmdkeys:
-            ds.attrs['iso_topic_category'] = dsmd['iso_topic_category']
-        else:
-            ds.attrs['iso_topic_category'] = 'Not provided'
 
     return(ds)
 
-def createMETuuid(infile):
-    """
-    Create a unique identifier for the dataset. Here we use the approach from mdharvest with data centre MET/ADC since data are published there
-    """
-    # Prepare creation of UUID
-    filename = "https://arcticdata.met.no/ds/"+os.path.basename(infile)+"-"
-    filename += datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-
-    # Create UUID
-    myuuid = uuid.uuid5(uuid.NAMESPACE_URL,filename)
-    # Add namespace
-    myidentifier = 'no.met.adc:'+str(myuuid)
-
-    return myidentifier
-
 def extractdata(frostcfg, pars, log, stmd, output, simple=True):
     '''
-    Does the actual exrtraction of data
+    Does the actual extraction of data
 
     Args:
         frostcfg: dictionary with endpoints and stations to collect.
@@ -646,7 +611,7 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
         # Connect and read metadata about the station
         log.info("New station\n==========")
         log.info('Retrieving station metadata for station: %s', s)
-        myrequest_station = 'ids='+s+'&validtime=1000-01-01/9999-01-01'
+        myrequest_station = 'ids='+s
         metadata, msger = pull_request(frostcfg['endpointmeta'], myrequest_station, frostcfg, log, s=s)
         #print(json.dumps(metadata, indent=4))
         #print(metadata['data'][0]['name'])
@@ -674,8 +639,20 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
             """
             # TODO add support for multiple time resolutions...
             mm = ''.join(['Retrieving variables metadata for station: ', s])
-            myrequest_vars = 'sources='+s+'&referencetime='+'/'.join(p)+'&timeresolutions='+frostcfg['frequency']
+
+            # Removed timeresolutions from API search when using 'moving' since it prompted responsecode 404  
+            if frostcfg['st_type'] == 'moving':
+                myrequest_vars = 'sources='+s+'&referencetime='+'/'.join(p)
+                print(f'request api: {myrequest_vars}\n')
+            else:
+                myrequest_vars = 'sources='+s+'&referencetime='+'/'.join(p)+'&timeresolutions='+frostcfg['frequency']
+            
             variables = get_vars(myrequest_vars, frostcfg, log, mm)
+
+
+            #print(f'variables from endpointparameters in pull_reguest with get_vars func: {variables}')
+                    
+
             #print('>>>> ', json.dumps(variables['data'], indent=2))
             #sys.exit()
             if 'data' in variables.keys():
@@ -729,7 +706,7 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
 ##                time_dim[t_name] = ([t_name], dates)
                
             # Set up the time dimension ++
-            dates = pd.date_range(p[0], p[1], freq=freq_dict[frostcfg['frequency']])
+            dates = pd.date_range(p[0], p[1], freq=freq_dict[frostcfg['frequency']].replace('M', 'ME'))
             dates = dates.drop(dates[-1]) # Means that last time step will be dropped
             t_name = 'time'
 
@@ -1046,7 +1023,10 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
                 if est == 'moving' and 'latitude' in all_ds_station.data_vars:
                     lats = np.array(all_ds_station.data_vars['latitude'].values).flatten().astype('float')
                     lons = np.array(all_ds_station.data_vars['longitude'].values).flatten().astype('float')
-                    bbox = list()
+                    
+
+
+                    bbox = dict()
                     bbox['lat_min'] = np.nanmin(lats)
                     bbox['lat_max'] = np.nanmax(lats)
                     bbox['lon_min'] = np.nanmin(lons)
@@ -1059,11 +1039,7 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
                 except TypeError:
                     voc_list = None 
 
-                """
-                Dump to NetCDF in monthly files, continues updates are overwriting the last file.
-
-                Old identifiers are reused.
-                """
+                # Dump to NetCDF in monthly files, continues updates are overwriting the last file.
                 out_folder = os.path.join(output['destdir'], s, str(datetime.strptime(p[0],'%Y-%m-%d').year))
                 if frostcfg['stations'][s] != None:
                     if 'sourceId' in frostcfg['stations'][s]:
@@ -1076,83 +1052,39 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
                     pass
                 else:
                     os.mkdir(out_folder)
-                oldid = None
-                oldhist = None
-                # Check if file already exist and keep some information
-                # This can be further cleaned along the lines of pubishcriosdata
-                # but that is a larger rewrite
-                if os.path.isfile(outputfile):
-                    mylog.info("%s exists, will retrieve existing identifier", outputfile)
-                    # The open the file
-                    try:
-                        oldds = xr.open_dataset(outputfile)
-                    except Exception as e:
-                        mylog.warning("Could not open old dataset: %s", e)
-                        mylog.warning("Overwriting...")
-                    # Retrieve existing identifier
-                    if 'id' in oldds.attrs.keys():
-                        oldid = oldds.attrs['id']
-                    else:
-                        mylog.info('No id found, adding one')
-                        # This is done further down...
-                    # Get the original history statement for amendment
-                    if 'history' in oldds.attrs.keys():
-                        oldhist = oldds.attrs['history']
-                    # Get the last time step handled for clean merging
-                    oldds.close()
+                
+                if all_ds_station.data_vars: 
+                    #To pass time to int32, otherwise the netcdf will be written with time in int64
+                    ds_dictio = all_ds_station.to_dict()
+                    alltimes = [x for x in ds_dictio['coords'] if 'time' in x]
+                    for t_c in alltimes:
+                        bad_time = ds_dictio['coords'][t_c]['data']
+                        ds_dictio['coords'][t_c]['data'] = np.array([ti.replace(tzinfo=timezone.utc).timestamp() for ti in bad_time]).astype('i4')
+                    
+                    all_ds_station_period = xr.Dataset.from_dict(ds_dictio)
+                    # Add global attributes
+                    all_ds_station_period = add_global_attrs(est, all_ds_station_period, stmd, metadata, frostcfg['stations'][s], {'datasetstart': datasetstart,'datasetend': datasetend}, voc_list, bbox)
+                    # Set missing values
+                    #print(all_ds_station_period)
                     """
-                    This is not used yet
-                    lastobs = oldds['time'].values[-1]
-                    oldds.close()
-                    # Drop new values that are already covered in the file
-                    # FIXME
-                    ## sample: df2 = df.where(df.time.dt.hour == 12, drop=True)
-                    cleanew = ds['ds'].where(ds['ds'].time > lastobs)
-                    # 
-                    # Merge datasets if needed FIXME - check carefully
-                    # the duplicate times are added
-                    uds = xr.concat([oldds, cleanew], dim='time', coords='minimal', compat="no_conflicts")
-                    #sys.exit()
-                    uds.attrs['time_coverage_end'] = ds['ds'].attrs['time_coverage_end']
-                    #uds.attrs['history'] = oldds.attrs['history']+'\n'+datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')+': Updated'
-                    ds['ds'] = uds
-                    myappend = True
+                    print(all_ds_station_period['time_PT1H'])
+                    sys.exit()
                     """
-                try:
-                    if all_ds_station.data_vars: 
-                        #To pass time to int32, otherwise the netcdf will be written with time in int64
-                        ds_dictio = all_ds_station.to_dict()
-                        alltimes = [x for x in ds_dictio['coords'] if 'time' in x]
-                        for t_c in alltimes:
-                            bad_time = ds_dictio['coords'][t_c]['data']
-                            ds_dictio['coords'][t_c]['data'] = np.array([ti.replace(tzinfo=timezone.utc).timestamp() for ti in bad_time]).astype('i4')
-                        
-                        all_ds_station_period = xr.Dataset.from_dict(ds_dictio)
-                        # Add global attributes
-                        all_ds_station_period = add_global_attrs(est, all_ds_station_period, stmd, metadata, frostcfg['stations'][s], {'datasetstart': datasetstart,'datasetend': datasetend}, voc_list, bbox)
-                        # Set missing values
-                        #print(all_ds_station_period)
-                        """
-                        print(all_ds_station_period['time_PT1H'])
-                        sys.exit()
-                        """
-                        all_ds_station = all_ds_station.fillna(myfillvalue)
-                        # Add the identifier if not existing
-                        if oldid:
-                            all_ds_station_period.attrs['id'] = oldid
-                        else:
-                            all_ds_station_period.attrs['id'] = createMETuuid(outputfile)
-                        # Dump data to CF-NetCDF
-                        all_ds_station_period.to_netcdf(outputfile, encoding=set_encoding(all_ds_station_period, time_name=alltimes[0]))
-                        del all_ds_station
-                        del all_ds_station_period
-                    else:
-                        continue
+                    all_ds_station = all_ds_station.fillna(myfillvalue)
+                    # Dump data
+                    all_ds_station_period.to_netcdf(outputfile, encoding=set_encoding(all_ds_station_period, time_name=alltimes[0]))
+                    del all_ds_station
+                    del all_ds_station_period
+                else:
+                    continue
+
+                """
+                #except TypeError:
                 except Exception as e:
                     log.error("Something went wrong dumping data to file: %s", e)
                     sys.exit()
                     continue
-
+                """
 
 
 if __name__ == '__main__':
@@ -1171,10 +1103,20 @@ if __name__ == '__main__':
     mylog = initialise_logger(output_dir['logfile'])
     mylog.info('Configuration of logging is finished.')
 
+    if cfgstr['frostcfg']['st_type'] == 'moving':
+        # Print and return available moving station IDs
+        stations = print_and_return_station_ids(cfgstr['frostcfg'])
+        if stations is None:
+            mylog.error("Failed to retrieve station IDs.")
+            
+
     # Query data and create netcdf
     mylog.info('Process stations requested in configuration file.')
+    extractdata(cfgstr['frostcfg'], args, mylog, cfgstr['attributes'], output_dir)
+
+    """
     try:
         extractdata(cfgstr['frostcfg'], args, mylog, cfgstr['attributes'], output_dir)
     except Exception as e:
         mylog.error('Something failed %s', e)
-
+    """
