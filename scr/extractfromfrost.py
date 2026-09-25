@@ -1041,7 +1041,7 @@ def extractdata(frostcfg, pars, log, stmd, output, simple=True):
             mynewcolnames = {}
             for it in mycolnames:
                 itnew = re.sub(r'PT1H|[\ ()-]','',it)
-                itnew = re.sub(r'(mean|sum)','\g<1>_',itnew)
+                itnew = re.sub(r'(mean|sum)',r'\g<1>_',itnew)
                 mynewcolnames.update({it:itnew})
             #print('>>>> ', mynewcolnames)
             ds_station = ds_station.rename_vars(mynewcolnames)
